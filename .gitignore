@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+# Temp files and outputs
+_tmp_*.png
+*.pdf
+*.xlsx
+*.csv
+.DS_Store

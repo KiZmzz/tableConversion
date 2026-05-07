@@ -1,0 +1,6 @@
+pdfplumber==0.11.9
+openpyxl==3.1.5
+rapidocr-onnxruntime==1.2.3
+opencv-python-headless==4.13.0.92
+numpy>=2.0
+Pillow>=9.1
