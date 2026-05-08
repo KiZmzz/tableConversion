@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:  # 允许在网页上点击手动触发
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 消除 Node.js 20 警告
+
 jobs:
   build:
     runs-on: windows-latest
@@ -25,15 +28,15 @@ jobs:
 
     - name: Build EXE with PyInstaller
       run: |
-        # 必须使用 --onedir 模式，否则 PaddlePaddle 解压巨慢
-        pyinstaller --noconfirm --onedir --windowed --name "PDF表格转Excel工具" --hidden-import="paddle" --hidden-import="paddleocr" --hidden-import="rapidocr_onnxruntime" --collect-all "customtkinter" --collect-all "paddleocr" main.py
+        # 使用纯英文名称避免 Windows GitHub runner 上的中文路径乱码/找不到文件错误
+        pyinstaller --noconfirm --onedir --windowed --name "TableConversion" --hidden-import="paddle" --hidden-import="paddleocr" --hidden-import="rapidocr_onnxruntime" --collect-all "customtkinter" --collect-all "paddleocr" main.py
 
     - name: Zip the build folder
       run: |
-        Compress-Archive -Path dist/PDF表格转Excel工具 -DestinationPath dist/PDF表格转Excel工具_Windows.zip
+        Compress-Archive -Path dist/TableConversion -DestinationPath dist/TableConversion_Windows.zip
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: PDF表格转Excel工具-Windows
-        path: dist/PDF表格转Excel工具_Windows.zip
+        name: TableConversion-Windows-EXE
+        path: dist/TableConversion_Windows.zip
