@@ -42,6 +42,7 @@ jobs:
             '--hidden-import', 'paddleocr',
             '--hidden-import', 'rapidocr_onnxruntime',
             '--hidden-import', 'openpyxl',
+            '--hidden-import', 'customtkinter',
             '--collect-all', 'customtkinter',
             '--collect-all', 'paddleocr',
             '--collect-all', 'paddlex',
