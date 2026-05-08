@@ -41,19 +41,19 @@ jobs:
             '--hidden-import', 'paddle',
             '--hidden-import', 'paddleocr',
             '--hidden-import', 'rapidocr_onnxruntime',
+            '--hidden-import', 'openpyxl',
             '--collect-all', 'customtkinter',
             '--collect-all', 'paddleocr',
+            '--collect-all', 'rapidocr_onnxruntime',
+            '--collect-all', 'onnxruntime',
+            '--collect-all', 'pdfplumber',
+            '--collect-all', 'shapely',
             'main.py'
         ])
         "
-
-    - name: Zip the build folder
-      run: |
-        # 使用 7z 替代 PowerShell 自带的 Compress-Archive，避免 2GB 大小限制导致崩溃，且速度快10倍
-        7z a -tzip dist/TableConversion_Windows.zip ./dist/TableConversion/
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: TableConversion-Windows-EXE
-        path: dist/TableConversion_Windows.zip
+        path: dist/TableConversion

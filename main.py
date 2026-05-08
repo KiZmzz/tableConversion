@@ -374,15 +374,11 @@ def process_pdf(pdf_path, output_path, dpi=300, engine='paddle', log_callback=No
         log("\n⚡ 初始化极速模型 (RapidOCR)...")
         ocr = RapidOCR(text_score=0.1, box_score_thresh=0.1)
     else:
-        log("\n🎯 初始化高精度模型 (PaddleOCR v3.5)...")
+        log("\n🎯 初始化高精度模型 (PaddleOCR)...")
         ocr = PaddleOCR(
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
+            use_angle_cls=False,
             lang='ch',
-            ocr_version='PP-OCRv5',
-            text_detection_model_name='PP-OCRv5_mobile_det',
-            text_recognition_model_name='PP-OCRv5_mobile_rec',
+            show_log=False
         )
     scale = dpi / 200.0  # 相对 200 DPI 的缩放比
 
