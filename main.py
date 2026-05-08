@@ -833,7 +833,12 @@ def main():
         parser.add_argument('pdf_file', nargs='?', default='Scan.pdf', help='PDF 文件路径')
         parser.add_argument('-o', '--output', default=None, help='输出 Excel 文件路径')
         parser.add_argument('--dpi', type=int, default=300, help='OCR 分辨率（默认300）')
+        parser.add_argument('--self-test-ocr', action='store_true', help=argparse.SUPPRESS)
         args = parser.parse_args()
+        if args.self_test_ocr:
+            RapidOCR()
+            print('RapidOCR OK')
+            return
         output = args.output or f"{Path(args.pdf_file).stem}.xlsx"
         process_pdf(args.pdf_file, output, args.dpi)
     else:
@@ -845,4 +850,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
