@@ -3,10 +3,10 @@ name: Build Windows EXE
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:  # 允许在网页上点击手动触发
+  workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 消除 Node.js 20 警告
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -43,12 +43,22 @@ jobs:
             '--hidden-import', 'rapidocr_onnxruntime',
             '--hidden-import', 'openpyxl',
             '--hidden-import', 'customtkinter',
+            '--hidden-import', 'pdfplumber',
+            '--hidden-import', 'shapely',
+            '--hidden-import', 'imgaug',
+            '--hidden-import', 'lmdb',
+            '--hidden-import', 'pyclipper',
+            '--hidden-import', 'skimage',
             '--collect-all', 'customtkinter',
             '--collect-all', 'paddleocr',
             '--collect-all', 'rapidocr_onnxruntime',
             '--collect-all', 'onnxruntime',
             '--collect-all', 'pdfplumber',
             '--collect-all', 'shapely',
+            '--collect-all', 'imgaug',
+            '--collect-all', 'pyclipper',
+            '--collect-all', 'lmdb',
+            '--collect-all', 'skimage',
             'main.py'
         ])
         "
