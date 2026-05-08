@@ -26,12 +26,23 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
+    - name: Verify OCR runtime before build
+      run: |
+        python -c "import onnxruntime, rapidocr; print('onnxruntime', onnxruntime.__version__); print('providers', onnxruntime.get_available_providers()); rapidocr.RapidOCR(); print('RapidOCR OK')"
+
     - name: Build EXE with PyInstaller
       run: |
         python -c "
         import sys
         sys.setrecursionlimit(5000)
         import PyInstaller.__main__
+        from PyInstaller.utils.hooks import collect_dynamic_libs
+
+        extra_args = []
+        for package in ('onnxruntime', 'msvc_runtime'):
+            for src, dest in collect_dynamic_libs(package):
+                extra_args.extend(['--add-binary', f'{src};{dest}'])
+
         PyInstaller.__main__.run([
             '--noconfirm',
             '--onedir',
@@ -45,7 +56,6 @@ jobs:
             '--hidden-import', 'openpyxl',
             '--hidden-import', 'pdfplumber',
             '--hidden-import', 'shapely',
-            '--hidden-import', 'shapely.geometry',
             '--collect-all', 'qfluentwidgets',
             '--collect-all', 'rapidocr',
             '--collect-all', 'onnxruntime',
@@ -54,9 +64,14 @@ jobs:
             '--copy-metadata', 'qfluentwidgets',
             '--copy-metadata', 'rapidocr',
             '--copy-metadata', 'onnxruntime',
+            *extra_args,
             'main.py'
         ])
         "
+
+    - name: Verify packaged OCR runtime
+      run: |
+        dist\TableConversion\TableConversion.exe --help
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4

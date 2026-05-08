@@ -4,4 +4,5 @@ opencv-python-headless>=4.8.0
 Pillow>=9.1
 PyQt-Fluent-Widgets>=1.7.0
 rapidocr>=3.0.0
-onnxruntime==1.15.1
+onnxruntime
+msvc-runtime; platform_system == "Windows"
