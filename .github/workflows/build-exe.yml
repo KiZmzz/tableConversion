@@ -28,12 +28,28 @@ jobs:
 
     - name: Build EXE with PyInstaller
       run: |
-        # 使用纯英文名称避免 Windows GitHub runner 上的中文路径乱码/找不到文件错误
-        pyinstaller --noconfirm --onedir --windowed --name "TableConversion" --hidden-import="paddle" --hidden-import="paddleocr" --hidden-import="rapidocr_onnxruntime" --collect-all "customtkinter" --collect-all "paddleocr" main.py
+        python -c "
+        import sys
+        sys.setrecursionlimit(5000)
+        import PyInstaller.__main__
+        PyInstaller.__main__.run([
+            '--noconfirm',
+            '--onedir',
+            '--windowed',
+            '--name', 'TableConversion',
+            '--hidden-import', 'paddle',
+            '--hidden-import', 'paddleocr',
+            '--hidden-import', 'rapidocr_onnxruntime',
+            '--collect-all', 'customtkinter',
+            '--collect-all', 'paddleocr',
+            'main.py'
+        ])
+        "
 
     - name: Zip the build folder
       run: |
-        Compress-Archive -Path dist/TableConversion -DestinationPath dist/TableConversion_Windows.zip
+        # 使用 7z 替代 PowerShell 自带的 Compress-Archive，避免 2GB 大小限制导致崩溃，且速度快10倍
+        7z a -tzip dist/TableConversion_Windows.zip ./dist/TableConversion/
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
