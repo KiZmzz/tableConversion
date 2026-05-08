@@ -37,6 +37,7 @@ jobs:
             '--onedir',
             '--windowed',
             '--name', 'TableConversion',
+            '--icon', 'app.ico',
             '--hidden-import', 'paddle',
             '--hidden-import', 'paddleocr',
             '--hidden-import', 'rapidocr_onnxruntime',
