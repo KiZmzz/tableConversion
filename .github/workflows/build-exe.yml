@@ -39,7 +39,7 @@ jobs:
         from PyInstaller.utils.hooks import collect_dynamic_libs
 
         extra_args = []
-        for package in ('onnxruntime', 'msvc_runtime'):
+        for package in ('onnxruntime',):
             for src, dest in collect_dynamic_libs(package):
                 extra_args.extend(['--add-binary', f'{src};{dest}'])
 
@@ -61,7 +61,7 @@ jobs:
             '--collect-all', 'onnxruntime',
             '--collect-all', 'pdfplumber',
             '--collect-all', 'shapely',
-            '--copy-metadata', 'qfluentwidgets',
+            '--copy-metadata', 'PyQt-Fluent-Widgets',
             '--copy-metadata', 'rapidocr',
             '--copy-metadata', 'onnxruntime',
             *extra_args,

@@ -46,7 +46,7 @@ python main.py 你的文件.pdf --dpi 400
 本地打包（需要 Windows 环境）：
 ```bash
 pip install -r requirements.txt pyinstaller
-pyinstaller --noconfirm --onedir --windowed --name "TableConversion" --icon "app.ico" --hidden-import "PyQt5.QtPrintSupport" --hidden-import "qfluentwidgets" --hidden-import "rapidocr" --hidden-import "onnxruntime" --hidden-import "openpyxl" --hidden-import "pdfplumber" --hidden-import "shapely" --collect-all "qfluentwidgets" --collect-all "rapidocr" --collect-all "onnxruntime" --collect-all "pdfplumber" --collect-all "shapely" --copy-metadata "qfluentwidgets" --copy-metadata "rapidocr" --copy-metadata "onnxruntime" main.py
+pyinstaller --noconfirm --onedir --windowed --name "TableConversion" --icon "app.ico" --hidden-import "PyQt5.QtPrintSupport" --hidden-import "qfluentwidgets" --hidden-import "rapidocr" --hidden-import "onnxruntime" --hidden-import "openpyxl" --hidden-import "pdfplumber" --hidden-import "shapely" --collect-all "qfluentwidgets" --collect-all "rapidocr" --collect-all "onnxruntime" --collect-all "pdfplumber" --collect-all "shapely" --copy-metadata "PyQt-Fluent-Widgets" --copy-metadata "rapidocr" --copy-metadata "onnxruntime" main.py
 ```
 打包完成后，将 `dist/TableConversion` 整个文件夹发给用户即可。
 
