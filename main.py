@@ -66,23 +66,48 @@ def full_page_ocr(ocr_engine, img_path, engine_type='paddle'):
                 'conf': float(conf)
             })
     else:
-        result = ocr_engine.predict(img_path)
-        if not result: return items
-        for res in result:
-            if 'rec_texts' not in res:
-                continue
-            for i in range(len(res['rec_texts'])):
-                text = res['rec_texts'][i].strip()
-                conf = float(res['rec_scores'][i])
-                box = res['dt_polys'][i]  # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-                y_center = (float(box[0][1]) + float(box[2][1])) / 2
-                x_center = (float(box[0][0]) + float(box[2][0])) / 2
-                items.append({
-                    'text': text,
-                    'y': y_center,
-                    'x': x_center,
-                    'conf': conf
-                })
+        # 兼容标准 PaddleOCR 和基于 PaddleX 的新版 PaddleOCR
+        if hasattr(ocr_engine, 'ocr'):
+            try:
+                result = ocr_engine.ocr(img_path, cls=False)
+                if not result or not result[0]: return items
+                for line in result[0]:
+                    if not line: continue
+                    box = line[0]
+                    text = line[1][0]
+                    conf = line[1][1]
+                    y_center = (float(box[0][1]) + float(box[2][1])) / 2
+                    x_center = (float(box[0][0]) + float(box[2][0])) / 2
+                    items.append({
+                        'text': text.strip(),
+                        'y': y_center,
+                        'x': x_center,
+                        'conf': float(conf)
+                    })
+                return items
+            except Exception as e:
+                # 尝试后备方式 (如果异常)
+                pass
+                
+        # 兼容使用 Pipeline 的 PaddleX 格式
+        if hasattr(ocr_engine, 'predict'):
+            result = ocr_engine.predict(img_path)
+            if not result: return items
+            for res in result:
+                if 'rec_texts' not in res:
+                    continue
+                for i in range(len(res['rec_texts'])):
+                    text = res['rec_texts'][i].strip()
+                    conf = float(res['rec_scores'][i])
+                    box = res['dt_polys'][i]  # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+                    y_center = (float(box[0][1]) + float(box[2][1])) / 2
+                    x_center = (float(box[0][0]) + float(box[2][0])) / 2
+                    items.append({
+                        'text': text,
+                        'y': y_center,
+                        'x': x_center,
+                        'conf': conf
+                    })
     return items
 
 
@@ -377,8 +402,7 @@ def process_pdf(pdf_path, output_path, dpi=300, engine='paddle', log_callback=No
         log("\n🎯 初始化高精度模型 (PaddleOCR)...")
         ocr = PaddleOCR(
             use_angle_cls=False,
-            lang='ch',
-            show_log=False
+            lang='ch'
         )
     scale = dpi / 200.0  # 相对 200 DPI 的缩放比
 
