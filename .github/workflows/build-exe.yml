@@ -45,7 +45,6 @@ jobs:
             '--hidden-import', 'customtkinter',
             '--collect-all', 'customtkinter',
             '--collect-all', 'paddleocr',
-            '--collect-all', 'paddlex',
             '--collect-all', 'rapidocr_onnxruntime',
             '--collect-all', 'onnxruntime',
             '--collect-all', 'pdfplumber',

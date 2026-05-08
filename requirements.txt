@@ -3,7 +3,7 @@ openpyxl==3.1.5
 paddlepaddle>=2.5.0
 paddleocr==2.8.1
 opencv-python-headless==4.13.0.92
-numpy>=2.0
+
 Pillow>=9.1
 customtkinter>=5.2.2
 rapidocr-onnxruntime>=1.4.0
