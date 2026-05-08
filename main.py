@@ -1,23 +1,31 @@
 """
 PDF 表格转 Excel 工具（支持扫描件）
-使用 PaddleOCR 进行中文 OCR + 坐标聚类提取表格
+使用 RapidOCR (PP-OCRv4 ONNX) 进行中文识别 + 坐标聚类提取表格
 
-依赖: pip install pdfplumber openpyxl paddleocr paddlepaddle opencv-python-headless
+依赖: pip install pdfplumber openpyxl rapidocr onnxruntime opencv-python-headless PyQt-Fluent-Widgets
 用法: python main.py [PDF文件] [-o 输出文件]
 """
 
 import os, sys, re, argparse
 from pathlib import Path
 import threading
-import tkinter as tk
-from tkinter import filedialog
-import customtkinter as ctk
+
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                              QHBoxLayout, QFileDialog)
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QColor
+
+from qfluentwidgets import (
+    PrimaryPushButton, PushButton, LineEdit, ComboBox, SpinBox,
+    TextEdit, CardWidget, ProgressBar, InfoBar,
+    SubtitleLabel, StrongBodyLabel, BodyLabel, CaptionLabel,
+    FluentIcon, setTheme, setThemeColor, Theme
+)
 
 import cv2
 import numpy as np
 import pdfplumber
-from paddleocr import PaddleOCR
-from rapidocr_onnxruntime import RapidOCR
+from rapidocr import RapidOCR
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
@@ -47,41 +55,45 @@ def detect_h_lines(img_path, min_len=60):
     return rows
 
 
-def full_page_ocr(ocr_engine, img_path, engine_type='paddle'):
+def preprocess_image(img_path):
+    """图像预处理：增强对比度 + 去噪，提升扫描件 OCR 精度"""
+    img = cv2.imread(img_path)
+    if img is None:
+        return img_path
+    
+    # 转灰度
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # CLAHE 自适应直方图均衡化（大幅提升扫描件对比度）
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    
+    # 轻度去噪（保留文字边缘）
+    denoised = cv2.fastNlMeansDenoising(enhanced, h=10, templateWindowSize=7, searchWindowSize=21)
+    
+    # 保存预处理后的图像
+    processed_path = img_path.replace('.png', '_enhanced.png')
+    cv2.imwrite(processed_path, denoised)
+    return processed_path
+
+
+def full_page_ocr(ocr_engine, img_path):
     """整页 OCR，返回带位置信息的结果"""
     items = []
-    if engine_type == 'rapid':
-        result, _ = ocr_engine(img_path)
-        if not result: return items
-        for line in result:
-            box = line[0]
-            text = line[1]
-            conf = line[2]
-            y_center = (float(box[0][1]) + float(box[2][1])) / 2
-            x_center = (float(box[0][0]) + float(box[2][0])) / 2
-            items.append({
-                'text': text.strip(),
-                'y': y_center,
-                'x': x_center,
-                'conf': float(conf)
-            })
-    else:
-        # PaddleOCR 2.8.1 标准 .ocr() 接口
-        result = ocr_engine.ocr(img_path, cls=False)
-        if not result or not result[0]: return items
-        for line in result[0]:
-            if not line: continue
-            box = line[0]
-            text = line[1][0]
-            conf = line[1][1]
-            y_center = (float(box[0][1]) + float(box[2][1])) / 2
-            x_center = (float(box[0][0]) + float(box[2][0])) / 2
-            items.append({
-                'text': text.strip(),
-                'y': y_center,
-                'x': x_center,
-                'conf': float(conf)
-            })
+    result = ocr_engine(img_path)
+    if not result or not result.txts: return items
+    for i in range(len(result.txts)):
+        box = result.boxes[i]
+        text = result.txts[i]
+        conf = result.scores[i]
+        y_center = (float(box[0][1]) + float(box[2][1])) / 2
+        x_center = (float(box[0][0]) + float(box[2][0])) / 2
+        items.append({
+            'text': text.strip(),
+            'y': y_center,
+            'x': x_center,
+            'conf': float(conf)
+        })
     return items
 
 
@@ -353,7 +365,7 @@ def create_excel(rows, header, output_path, contract_info=None, suspicious_rows=
     wb.save(output_path)
 
 
-def process_pdf(pdf_path, output_path, dpi=300, engine='paddle', log_callback=None, progress_callback=None):
+def process_pdf(pdf_path, output_path, dpi=300, log_callback=None, progress_callback=None):
     def log(msg):
         print(msg)
         if log_callback:
@@ -369,12 +381,8 @@ def process_pdf(pdf_path, output_path, dpi=300, engine='paddle', log_callback=No
         log(f"\n❌ 找不到文件 '{pdf_path}'")
         raise FileNotFoundError(f"找不到文件 '{pdf_path}'")
 
-    if engine == 'rapid':
-        log("\n⚡ 初始化极速模型 (RapidOCR)...")
-        ocr = RapidOCR(text_score=0.1, box_score_thresh=0.1)
-    else:
-        log("\n🎯 初始化高精度模型 (PaddleOCR)...")
-        ocr = PaddleOCR(use_angle_cls=False, lang='ch')
+    log("\n🎯 初始化 OCR 引擎 (RapidOCR PP-OCRv4)...")
+    ocr = RapidOCR()
     scale = dpi / 200.0  # 相对 200 DPI 的缩放比
 
     # 默认列边界（基于 200 DPI）
@@ -398,36 +406,42 @@ def process_pdf(pdf_path, output_path, dpi=300, engine='paddle', log_callback=No
     log(f"\n🔍 分析表头以动态计算列边界...")
     if page_data:
         first_page_img = page_data[0]
-        result = full_page_ocr(ocr, first_page_img, engine_type=engine)
+        result = full_page_ocr(ocr, first_page_img)
         if result:
             headers = {}
             for item in result:
-                x_center = item['x'] / scale
-                y_center = item['y'] / scale
+                x_center = item['x']
+                y_center = item['y']
                 text = item['text']
-                if y_center > 1000: continue
+                # 只在页面上半部分找表头
+                if y_center > 800 * scale: continue
                 for k in ['物品名称', '规格', '数量', '单位', '单价', '金额', '备注']:
                     if k in text and k not in headers:
                         headers[k] = x_center
             
             log(f"  检测到表头: {list(headers.keys())}")
-            if '数量' in headers and '单价' in headers and '金额' in headers:
-                x_qty = headers['数量']
-                x_unit = headers.get('单位', x_qty + 100)
+            # 只需要 '单价' 和 '金额' 就能推算出所有边界
+            if '单价' in headers and '金额' in headers:
                 x_price = headers['单价']
                 x_amount = headers['金额']
-                x_remark = headers.get('备注', x_amount + 200)
-
+                x_unit = headers.get('单位', x_price - 150 * scale)
+                x_qty = headers.get('数量', x_unit - 150 * scale)
+                x_remark = headers.get('备注', x_amount + 150 * scale)
+                x_name = headers.get('物品名称', 400 * scale)
+                # 规格列：物品名称表头的右侧就是规格列的开始
+                # 物品名称表头中心在 x_name，但实际名称数据在更左边
+                # 所以名称/规格的分界点应该在表头中心偏左的位置
                 b0 = 0
-                b1 = headers.get('规格', headers.get('物品名称', 0) + 200) if '规格' in headers else 250
-                b2 = x_qty - 60
-                b3 = (x_qty + x_unit) / 2
-                b4 = (x_unit + x_price) / 2
-                b5 = (x_price + x_amount) / 2
-                b6 = (x_amount + x_remark) / 2
-                b7 = 10000
-                col_bounds_200 = sorted([b0, b1, b2, b3, b4, b5, b6, b7])
-                log(f"  成功应用动态边界！")
+                b1 = x_name - 150 * scale               # 物品名称 | 规格型号 的分界
+                b2 = x_qty - 80 * scale                  # 规格型号 | 数量 的分界
+                b3 = (x_qty + x_unit) / 2                # 数量 | 单位
+                b4 = (x_unit + x_price) / 2              # 单位 | 单价
+                b5 = (x_price + x_amount) / 2            # 单价 | 金额
+                b6 = (x_amount + x_remark) / 2           # 金额 | 备注
+                b7 = 10000 * scale
+                # 将像素坐标转回 200 DPI 基准
+                col_bounds_200 = sorted([v / scale for v in [b0, b1, b2, b3, b4, b5, b6, b7]])
+                log(f"  ✅ 成功应用动态边界！")
             else:
                 log(f"  未找齐关键表头，使用默认边界。")
 
@@ -444,9 +458,16 @@ def process_pdf(pdf_path, output_path, dpi=300, engine='paddle', log_callback=No
         h_lines = detect_h_lines(img_path, min_len=int(60 * scale))
         log(f"  水平线：{len(h_lines)} 条")
 
+        # 图像预处理（增强对比度 + 去噪）
+        enhanced_path = preprocess_image(img_path)
+
         # 整页 OCR
-        items = full_page_ocr(ocr, img_path, engine_type=engine)
+        items = full_page_ocr(ocr, enhanced_path)
         log(f"  OCR 文本块：{len(items)} 个")
+
+        # 清理预处理临时文件
+        if enhanced_path != img_path and os.path.exists(enhanced_path):
+            os.remove(enhanced_path)
 
         # 提取合同信息（第一页）
         if pi == 0 and h_lines:
@@ -563,260 +584,247 @@ def process_pdf(pdf_path, output_path, dpi=300, engine='paddle', log_callback=No
     log(f"{'=' * 55}\n")
 
 
-class App(ctk.CTk):
+class MainWindow(QMainWindow):
+    """PDF 表格转 Excel - Fluent Design 主窗口"""
+
+    log_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(float)
+    done_signal = pyqtSignal()
+
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("PDF 表格转 Excel")
+        self.resize(900, 680)
+        self.setMinimumSize(800, 600)
 
-        # --- Window Config ---
-        self.title("PDF to Excel Converter")
-        self.geometry("850x650")
-        self.minsize(800, 600)
+        # 深色模式
+        setTheme(Theme.DARK)
+        setThemeColor(QColor(59, 130, 246))  # #3B82F6 蓝色主题
+
+        self._init_ui()
+        self._connect_signals()
+
+    # ── UI 构建 ──────────────────────────────────────────
+    def _init_ui(self):
+        central = QWidget()
+        central.setObjectName("centralWidget")
+        self.setCentralWidget(central)
+        # 只针对中心面板设置深色背景，防止破坏按钮等控件的自带样式
+        self.setStyleSheet("#centralWidget { background-color: #1A1A2E; }")
         
-        # Color Theme & Appearance
-        ctk.set_appearance_mode("Dark")  # Force dark mode for a sleek look
-        ctk.set_default_color_theme("blue")
+        root = QVBoxLayout(central)
+        root.setContentsMargins(28, 24, 28, 20)
+        root.setSpacing(20)
+
+        # ─ 标题栏 ─
+        header = QHBoxLayout()
+        title = SubtitleLabel("📄 PDF 表格转 Excel")
+        title.setStyleSheet("color: white; font-size: 24px; font-weight: bold;")
+        header.addWidget(title)
+        header.addStretch()
+        subtitle = CaptionLabel("智能 OCR · 扫描件支持 · 极速生成")
+        subtitle.setStyleSheet("color: #94A3B8;")
+        header.addWidget(subtitle, alignment=Qt.AlignBottom)
+        root.addLayout(header)
+
+        # ─ 控制面板卡片 (合并文件和转换设置) ─
+        control_card = CardWidget(self)
+        control_layout = QVBoxLayout(control_card)
+        control_layout.setContentsMargins(24, 20, 24, 20)
+        control_layout.setSpacing(16)
+
+        # 行 1: PDF 选择
+        pdf_row = QHBoxLayout()
+        self.pdf_btn = PushButton("📂 选择 PDF")
+        self.pdf_btn.setFixedWidth(120)
+        self.pdf_edit = LineEdit()
+        self.pdf_edit.setPlaceholderText("请选择需要转换的 PDF 文件...")
+        self.pdf_edit.setReadOnly(True)
+        pdf_row.addWidget(self.pdf_btn)
+        pdf_row.addWidget(self.pdf_edit)
+        control_layout.addLayout(pdf_row)
+
+        # 行 2: 输出路径
+        out_row = QHBoxLayout()
+        self.out_btn = PushButton("💾 保存路径")
+        self.out_btn.setFixedWidth(120)
+        self.out_edit = LineEdit()
+        self.out_edit.setPlaceholderText("自动生成，或手动选择...")
+        self.out_edit.setReadOnly(True)
+        out_row.addWidget(self.out_btn)
+        out_row.addWidget(self.out_edit)
+        control_layout.addLayout(out_row)
+
+        # 行 3: 质量、DPI、开始转换 (三等分)
+        settings_row = QHBoxLayout()
+        settings_row.setSpacing(20)
         
-        # Define modern custom colors (Slate Dark Theme)
-        self.bg_color = "#0F172A"      # slate-900
-        self.card_color = "#1E293B"    # slate-800
-        self.accent_color = "#3B82F6"  # blue-500
-        self.text_color = "#F8FAFC"    # slate-50
-
-        self.configure(fg_color=self.bg_color)
+        # 1. 质量模式
+        quality_layout = QHBoxLayout()
+        quality_layout.setSpacing(10)
+        quality_label = BodyLabel("质量模式:")
+        quality_label.setStyleSheet("color: white; font-weight: 500;")
+        self.quality_combo = ComboBox()
+        self.quality_combo.addItems(["高精度 (300 DPI)", "极速 (200 DPI)"])
+        self.quality_combo.setCurrentIndex(0)
+        quality_layout.addWidget(quality_label)
+        quality_layout.addWidget(self.quality_combo, stretch=1)
         
-        # Grid config
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        # 2. DPI
+        dpi_layout = QHBoxLayout()
+        dpi_layout.setSpacing(10)
+        dpi_label = BodyLabel("DPI:")
+        dpi_label.setStyleSheet("color: white; font-weight: 500;")
+        self.dpi_spin = SpinBox()
+        self.dpi_spin.setRange(100, 600)
+        self.dpi_spin.setValue(300)
+        dpi_layout.addWidget(dpi_label)
+        dpi_layout.addWidget(self.dpi_spin, stretch=1)
 
-        # --- Header ---
-        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.grid(row=0, column=0, padx=30, pady=(30, 10), sticky="ew")
+        # 3. 开始转换按钮
+        self.start_btn = PrimaryPushButton("🚀 开始转换")
+        self.start_btn.setFixedHeight(34)
+        self.start_btn.setStyleSheet("""
+            PrimaryPushButton {
+                background-color: #3B82F6;
+                color: white;
+                font-size: 15px;
+                font-weight: bold;
+                border-radius: 6px;
+                border: 1px solid #2563EB;
+            }
+            PrimaryPushButton:hover {
+                background-color: #2563EB;
+            }
+            PrimaryPushButton:pressed {
+                background-color: #1D4ED8;
+            }
+            PrimaryPushButton:disabled {
+                background-color: #475569;
+                color: #94A3B8;
+                border: 1px solid #334155;
+            }
+        """)
+
+        settings_row.addLayout(quality_layout, 1)
+        settings_row.addLayout(dpi_layout, 1)
+        settings_row.addWidget(self.start_btn, 1)
+
+        control_layout.addLayout(settings_row)
         
-        self.title_label = ctk.CTkLabel(
-            self.header_frame, 
-            text="📄 PDF 表格转 Excel 工具", 
-            font=ctk.CTkFont(family="Microsoft YaHei", size=28, weight="bold"),
-            text_color=self.accent_color
+        root.addWidget(control_card)
+
+        # ─ 进度条 ─
+        self.progress_bar = ProgressBar()
+        self.progress_bar.setFixedHeight(4)
+        self.progress_bar.setValue(0)
+        root.addWidget(self.progress_bar)
+
+        # ─ 日志区域 ─
+        log_card = CardWidget(self)
+        log_layout = QVBoxLayout(log_card)
+        log_layout.setContentsMargins(16, 12, 16, 12)
+
+        self.log_box = TextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setStyleSheet("""
+            TextEdit {
+                background-color: #0A0A0F;
+                color: #A7F3D0;
+                font-family: 'Consolas', 'Menlo', monospace;
+                font-size: 13px;
+                border: none;
+                border-radius: 8px;
+                padding: 10px;
+            }
+        """)
+        log_layout.addWidget(self.log_box)
+        root.addWidget(log_card, stretch=1)
+
+        # 欢迎消息
+        self._log("✨ 欢迎使用 PDF 表格转 Excel 工具！")
+        self._log("✨ 请在上方选择文件后点击 [开始转换]。\n" + "─" * 50)
+
+    # ── 信号连接 ─────────────────────────────────────────
+    def _connect_signals(self):
+        self.pdf_btn.clicked.connect(self._select_pdf)
+        self.out_btn.clicked.connect(self._select_output)
+        self.start_btn.clicked.connect(self._start_conversion)
+        self.quality_combo.currentIndexChanged.connect(self._on_quality_change)
+        self.log_signal.connect(self._log)
+        self.progress_signal.connect(self._update_progress)
+        self.done_signal.connect(self._on_done)
+
+    # ── 槽函数 ───────────────────────────────────────────
+    def _select_pdf(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 PDF 文件", "", "PDF Files (*.pdf);;All Files (*)"
         )
-        self.title_label.pack(side="left")
-        
-        self.subtitle_label = ctk.CTkLabel(
-            self.header_frame,
-            text="智能提取 · 扫描件支持 · 极速生成",
-            font=ctk.CTkFont(family="Microsoft YaHei", size=13),
-            text_color="gray60"
+        if path:
+            self.pdf_edit.setText(path)
+            self.out_edit.setText(str(Path(path).with_suffix('.xlsx')))
+
+    def _select_output(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存 Excel 文件", "", "Excel Files (*.xlsx);;All Files (*)"
         )
-        self.subtitle_label.pack(side="right", anchor="s", pady=10)
+        if path:
+            self.out_edit.setText(path)
 
-        # --- Main Content Area (Cards) ---
-        self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.content_frame.grid(row=1, column=0, padx=30, pady=10, sticky="ew")
-        self.content_frame.grid_columnconfigure(0, weight=3)
-        self.content_frame.grid_columnconfigure(1, weight=1)
+    def _on_quality_change(self, index):
+        self.dpi_spin.setValue(300 if index == 0 else 200)
 
-        # 1. File Configuration Card
-        self.file_card = ctk.CTkFrame(self.content_frame, fg_color=self.card_color, corner_radius=15)
-        self.file_card.grid(row=0, column=0, padx=(0, 10), sticky="nsew")
-        self.file_card.grid_columnconfigure(1, weight=1)
+    def _log(self, msg):
+        self.log_box.append(msg)
+        cursor = self.log_box.textCursor()
+        cursor.movePosition(cursor.End)
+        self.log_box.setTextCursor(cursor)
 
-        self.file_card_title = ctk.CTkLabel(self.file_card, text="📁 文件设置", font=ctk.CTkFont(family="Microsoft YaHei", weight="bold", size=16), text_color=self.text_color)
-        self.file_card_title.grid(row=0, column=0, columnspan=3, padx=20, pady=(15, 10), sticky="w")
+    def _update_progress(self, val):
+        self.progress_bar.setValue(int(val * 100))
 
-        # PDF Picker
-        self.pdf_btn = ctk.CTkButton(
-            self.file_card, text="选择 PDF", width=100, height=36,
-            font=ctk.CTkFont(family="Microsoft YaHei", weight="bold"), 
-            command=self.select_pdf,
-            fg_color=self.accent_color, hover_color="#2563EB"
-        )
-        self.pdf_btn.grid(row=1, column=0, padx=(20, 10), pady=(5, 15), sticky="w")
-        
-        self.pdf_path_var = ctk.StringVar()
-        self.pdf_entry = ctk.CTkEntry(
-            self.file_card, textvariable=self.pdf_path_var, state="readonly",
-            fg_color="#334155", border_width=0, corner_radius=6, height=36,
-            text_color="#CBD5E1"
-        )
-        self.pdf_entry.grid(row=1, column=1, padx=(0, 20), pady=(5, 15), sticky="ew")
+    def _on_done(self):
+        self.start_btn.setEnabled(True)
+        self.start_btn.setText("开始转换")
 
-        # Output Picker
-        self.out_btn = ctk.CTkButton(
-            self.file_card, text="保存路径", width=100, height=36,
-            font=ctk.CTkFont(family="Microsoft YaHei", weight="bold"),
-            fg_color="transparent", border_width=1, border_color="#475569",
-            hover_color="#334155", text_color=self.text_color,
-            command=self.select_output
-        )
-        self.out_btn.grid(row=2, column=0, padx=(20, 10), pady=(5, 20), sticky="w")
-        
-        self.out_path_var = ctk.StringVar()
-        self.out_entry = ctk.CTkEntry(
-            self.file_card, textvariable=self.out_path_var, state="readonly",
-            fg_color="#334155", border_width=0, corner_radius=6, height=36,
-            text_color="#CBD5E1"
-        )
-        self.out_entry.grid(row=2, column=1, padx=(0, 20), pady=(5, 20), sticky="ew")
-
-        # 2. Settings Card
-        self.settings_card = ctk.CTkFrame(self.content_frame, fg_color=self.card_color, corner_radius=15)
-        self.settings_card.grid(row=0, column=1, sticky="nsew")
-
-        self.settings_title = ctk.CTkLabel(self.settings_card, text="⚙️ 识别配置", font=ctk.CTkFont(family="Microsoft YaHei", weight="bold", size=16), text_color=self.text_color)
-        self.settings_title.pack(anchor="w", padx=20, pady=(15, 10))
-
-        self.dpi_frame = ctk.CTkFrame(self.settings_card, fg_color="transparent")
-        self.dpi_frame.pack(fill="x", padx=20, pady=(5, 15))
-        
-        self.dpi_label = ctk.CTkLabel(self.dpi_frame, text="分辨率(DPI):", text_color="gray80")
-        self.dpi_label.pack(side="left")
-        
-        self.dpi_entry = ctk.CTkEntry(
-            self.dpi_frame, width=70, justify="center",
-            fg_color="#334155", border_width=0, corner_radius=6, height=32,
-            text_color="#CBD5E1"
-        )
-        self.dpi_entry.insert(0, "300")
-        self.dpi_entry.pack(side="right")
-
-        self.engine_frame = ctk.CTkFrame(self.settings_card, fg_color="transparent")
-        self.engine_frame.pack(fill="x", padx=20, pady=(5, 15))
-        
-        self.engine_label = ctk.CTkLabel(self.engine_frame, text="引擎:", text_color="gray80")
-        self.engine_label.pack(side="left")
-        
-        self.engine_var = ctk.StringVar(value="高精度模式 (Paddle)")
-        self.engine_menu = ctk.CTkOptionMenu(
-            self.engine_frame, variable=self.engine_var,
-            values=["高精度模式 (Paddle)", "极速模式 (Rapid)"],
-            width=160, fg_color="#334155", button_color="#475569",
-            button_hover_color="#64748B", dropdown_fg_color="#1E293B",
-            text_color="#F8FAFC", command=self.on_engine_change,
-            dynamic_resizing=False
-        )
-        self.engine_menu.pack(side="right")
-        
-        # Engine Description Container (Strict size to prevent layout shift)
-        self.desc_container = ctk.CTkFrame(self.settings_card, fg_color="transparent", width=280, height=25)
-        self.desc_container.pack_propagate(False)
-        self.desc_container.pack(anchor="w", padx=20, pady=(0, 15))
-
-        self.engine_desc = ctk.CTkLabel(
-            self.desc_container, 
-            text="🎯 耗时较长（约数分钟），但识别极其精准。", 
-            text_color="#3B82F6", font=ctk.CTkFont(family="Microsoft YaHei", size=12),
-            anchor="w"
-        )
-        self.engine_desc.pack(side="left")
-
-        # Action Button
-        self.start_btn = ctk.CTkButton(
-            self.settings_card, text="开始转换 🚀", 
-            font=ctk.CTkFont(family="Microsoft YaHei", weight="bold", size=15),
-            height=45, corner_radius=8,
-            fg_color="#10B981", hover_color="#059669", # Emerald green
-            text_color="#FFFFFF",
-            command=self.start_conversion
-        )
-        self.start_btn.pack(fill="x", padx=20, pady=(10, 20), side="bottom")
-
-        # --- Logs & Progress ---
-        self.log_card = ctk.CTkFrame(self, fg_color=self.card_color, corner_radius=15)
-        self.log_card.grid(row=2, column=0, padx=30, pady=(10, 30), sticky="nsew")
-        self.log_card.grid_rowconfigure(0, weight=1)
-        self.log_card.grid_columnconfigure(0, weight=1)
-
-        self.log_textbox = ctk.CTkTextbox(
-            self.log_card, wrap="word", 
-            font=ctk.CTkFont(family="Consolas", size=13),
-            fg_color="#020617", text_color="#94A3B8", corner_radius=10, border_width=0
-        )
-        self.log_textbox.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="nsew")
-        
-        # Welcome message
-        self.log("✨ 欢迎使用 PDF 表格转 Excel 工具！")
-        self.log("✨ 请在上方选择文件后点击 [开始转换]。\n" + "-"*50)
-
-        self.progress_bar = ctk.CTkProgressBar(
-            self.log_card, height=8, corner_radius=4,
-            progress_color=self.accent_color, fg_color="#334155"
-        )
-        self.progress_bar.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="ew")
-        self.progress_bar.set(0)
-
-    def on_engine_change(self, choice):
-        if "Paddle" in choice:
-            self.engine_desc.configure(text="🎯 耗时较长（约数分钟），但识别极其精准。", text_color="#3B82F6")
-            self.start_btn.configure(fg_color="#10B981", hover_color="#059669")
-        else:
-            self.engine_desc.configure(text="⚡ 速度极快（约十几秒），适合清晰或页数极多的文档。", text_color="#F59E0B")
-            self.start_btn.configure(fg_color="#F59E0B", hover_color="#D97706")
-
-    def select_pdf(self):
-        file_path = filedialog.askopenfilename(
-            title="选择 PDF 文件",
-            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
-        )
-        if file_path:
-            self.pdf_path_var.set(file_path)
-            default_out = str(Path(file_path).with_suffix('.xlsx'))
-            self.out_path_var.set(default_out)
-
-    def select_output(self):
-        file_path = filedialog.asksaveasfilename(
-            title="保存 Excel 文件",
-            defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
-        )
-        if file_path:
-            self.out_path_var.set(file_path)
-
-    def log(self, message):
-        self.log_textbox.insert(tk.END, message + "\n")
-        self.log_textbox.see(tk.END)
-
-    def update_progress(self, value):
-        self.progress_bar.set(value)
-
-    def start_conversion(self):
-        pdf_path = self.pdf_path_var.get()
-        out_path = self.out_path_var.get()
-        try:
-            dpi = int(self.dpi_entry.get())
-        except ValueError:
-            self.log("❌ DPI 必须是整数！")
-            return
+    def _start_conversion(self):
+        pdf_path = self.pdf_edit.text()
+        out_path = self.out_edit.text()
+        dpi = self.dpi_spin.value()
 
         if not pdf_path:
-            self.log("❌ 请先选择 PDF 文件！")
+            InfoBar.warning("提示", "请先选择 PDF 文件！", parent=self, duration=3000)
             return
         if not out_path:
-            self.log("❌ 请选择输出路径！")
+            InfoBar.warning("提示", "请选择输出路径！", parent=self, duration=3000)
             return
 
-        self.start_btn.configure(state="disabled", text="转换中...", fg_color="gray40")
-        self.progress_bar.set(0)
-        self.log_textbox.delete("1.0", tk.END)
-        self.log(f"🚀 开始任务，文件: {Path(pdf_path).name}\n" + "-"*50)
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("转换中...")
+        self.progress_bar.setValue(0)
+        self.log_box.clear()
+        self._log(f"🚀 开始任务，文件: {Path(pdf_path).name}\n" + "─" * 50)
 
-        # 在子线程中执行
-        engine_choice = self.engine_var.get()
-        engine = 'rapid' if 'Rapid' in engine_choice else 'paddle'
-        thread = threading.Thread(target=self.run_conversion, args=(pdf_path, out_path, dpi, engine), daemon=True)
+        thread = threading.Thread(
+            target=self._run_conversion,
+            args=(pdf_path, out_path, dpi),
+            daemon=True
+        )
         thread.start()
 
-    def run_conversion(self, pdf_path, out_path, dpi, engine):
+    def _run_conversion(self, pdf_path, out_path, dpi):
         try:
-            def thread_safe_log(msg):
-                self.after(0, self.log, msg)
-            
-            def thread_safe_progress(val):
-                self.after(0, self.update_progress, val)
-
-            process_pdf(pdf_path, out_path, dpi=dpi, engine=engine, log_callback=thread_safe_log, progress_callback=thread_safe_progress)
+            process_pdf(
+                pdf_path, out_path, dpi=dpi,
+                log_callback=lambda msg: self.log_signal.emit(msg),
+                progress_callback=lambda val: self.progress_signal.emit(val)
+            )
+            self.log_signal.emit("\n✅ 转换完成！")
         except Exception as e:
-            self.after(0, self.log, f"\n❌ 发生错误: {str(e)}")
+            self.log_signal.emit(f"\n❌ 发生错误: {str(e)}")
         finally:
-            self.after(0, lambda: self.start_btn.configure(state="normal", text="开始转换 🚀", fg_color="#10B981"))
+            self.done_signal.emit()
+
 
 def main():
     if len(sys.argv) > 1:
@@ -825,14 +833,16 @@ def main():
         parser.add_argument('pdf_file', nargs='?', default='Scan.pdf', help='PDF 文件路径')
         parser.add_argument('-o', '--output', default=None, help='输出 Excel 文件路径')
         parser.add_argument('--dpi', type=int, default=300, help='OCR 分辨率（默认300）')
-        parser.add_argument('--engine', type=str, choices=['rapid', 'paddle'], default='paddle', help='OCR 引擎 (默认 paddle)')
         args = parser.parse_args()
         output = args.output or f"{Path(args.pdf_file).stem}.xlsx"
-        process_pdf(args.pdf_file, output, args.dpi, engine=args.engine)
+        process_pdf(args.pdf_file, output, args.dpi)
     else:
         # GUI 模式
-        app = App()
-        app.mainloop()
+        app = QApplication(sys.argv)
+        window = MainWindow()
+        window.show()
+        sys.exit(app.exec_())
 
 if __name__ == '__main__':
     main()
+
