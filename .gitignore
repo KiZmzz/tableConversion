@@ -16,5 +16,6 @@ dist/
 _tmp_*.png
 *.pdf
 *.xlsx
+*.docx
 *.csv
 .DS_Store
