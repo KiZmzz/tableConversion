@@ -5,6 +5,8 @@ import re
 import tempfile
 from pathlib import Path
 
+from converters.exceptions import ConversionCancelled
+
 
 def _ensure_docx_output(output_path):
     output = Path(output_path)
@@ -207,12 +209,21 @@ def _ocr_image(ocr_engine, image_path, min_confidence=0.35):
     return items
 
 
-def _convert_pdf_to_editable_word(pdf_path, output_path, dpi, log, progress_callback=None):
+def _convert_pdf_to_editable_word(
+    pdf_path,
+    output_path,
+    dpi,
+    log,
+    progress_callback=None,
+    cancel_check=None,
+):
     import fitz
     from docx import Document
     from docx.shared import Pt
     from rapidocr import RapidOCR
 
+    if cancel_check:
+        cancel_check()
     log("\n🔎 使用 OCR 可编辑 Word 模式...")
     log(f"🎯 初始化 OCR 引擎 (RapidOCR)，DPI={dpi}...")
     if progress_callback:
@@ -226,6 +237,8 @@ def _convert_pdf_to_editable_word(pdf_path, output_path, dpi, log, progress_call
     with fitz.open(pdf_path) as pdf, tempfile.TemporaryDirectory(prefix="pdf_to_word_ocr_") as tmpdir:
         total_pages = len(pdf)
         for page_index, page in enumerate(pdf):
+            if cancel_check:
+                cancel_check()
             page_no = page_index + 1
             if page_index == 0:
                 section.page_width = Pt(page.rect.width)
@@ -241,6 +254,8 @@ def _convert_pdf_to_editable_word(pdf_path, output_path, dpi, log, progress_call
             if progress_callback:
                 progress_callback(0.15 + 0.2 * (page_no / total_pages))
 
+            if cancel_check:
+                cancel_check()
             items = _ocr_image(ocr, image_path)
             lines = _group_ocr_items_into_lines(items)
             log(f"  OCR 文本块：{len(items)} 个，重建文本行：{len(lines)} 行")
@@ -256,6 +271,8 @@ def _convert_pdf_to_editable_word(pdf_path, output_path, dpi, log, progress_call
                 }
                 previous_bottom_pt = None
                 for line in lines:
+                    if cancel_check:
+                        cancel_check()
                     previous_bottom_pt = _add_layout_line(document, line, page_layout, previous_bottom_pt)
 
             if page_index < total_pages - 1:
@@ -264,11 +281,20 @@ def _convert_pdf_to_editable_word(pdf_path, output_path, dpi, log, progress_call
             if progress_callback:
                 progress_callback(0.35 + 0.55 * (page_no / total_pages))
 
+    if cancel_check:
+        cancel_check()
     log("\n📝 写入可编辑 Word 文档...")
     document.save(output_path)
 
 
-def convert_pdf_to_word(pdf_path, output_path, dpi=300, log_callback=None, progress_callback=None):
+def convert_pdf_to_word(
+    pdf_path,
+    output_path,
+    dpi=300,
+    log_callback=None,
+    progress_callback=None,
+    cancel_check=None,
+):
     """Convert PDF to editable DOCX text using OCR."""
     def log(msg):
         print(msg)
@@ -288,12 +314,25 @@ def convert_pdf_to_word(pdf_path, output_path, dpi=300, log_callback=None, progr
         log(f"\n❌ 找不到文件 '{pdf_path}'")
         raise FileNotFoundError(f"找不到文件 '{pdf_path}'")
 
+    if cancel_check:
+        cancel_check()
     output_path = _ensure_docx_output(output_path)
 
     if progress_callback:
         progress_callback(0.05)
 
-    _convert_pdf_to_editable_word(pdf_path, output_path, dpi, log, progress_callback)
+    try:
+        _convert_pdf_to_editable_word(
+            pdf_path,
+            output_path,
+            dpi,
+            log,
+            progress_callback,
+            cancel_check=cancel_check,
+        )
+    except ConversionCancelled:
+        log("\n⏹ 已停止当前任务。")
+        raise
 
     if progress_callback:
         progress_callback(1.0)

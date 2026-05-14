@@ -2,6 +2,8 @@
 
 import os
 import re
+import shutil
+import tempfile
 
 import cv2
 import numpy as np
@@ -10,6 +12,8 @@ from rapidocr import RapidOCR
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
+
+from converters.exceptions import ConversionCancelled
 
 
 def detect_h_lines(img_path, min_len=60):
@@ -346,21 +350,31 @@ def create_excel(rows, header, output_path, contract_info=None, suspicious_rows=
     wb.save(output_path)
 
 
-def convert_table_pdf_to_excel(pdf_path, output_path, dpi=300, log_callback=None, progress_callback=None):
+def convert_table_pdf_to_excel(
+    pdf_path,
+    output_path,
+    dpi=300,
+    log_callback=None,
+    progress_callback=None,
+    cancel_check=None,
+):
     def log(msg):
         print(msg)
         if log_callback:
             log_callback(msg)
 
-    log(f"\n{'=' * 55}")
-    log(f"  PDF 表格转 Excel 工具")
-    log(f"{'=' * 55}")
-    log(f"\n📄 输入：{pdf_path}")
-    log(f"📊 输出：{output_path}")
+    log(f"\n{'=' * 30}")
+    log(f"  PDF 表格转 Excel")
+    log(f"{'=' * 30}")
+    log(f"\n输入：{os.path.basename(pdf_path)}")
+    log(f"输出：{os.path.basename(output_path)}")
 
     if not os.path.exists(pdf_path):
         log(f"\n❌ 找不到文件 '{pdf_path}'")
         raise FileNotFoundError(f"找不到文件 '{pdf_path}'")
+
+    if cancel_check:
+        cancel_check()
 
     log("\n🎯 初始化 OCR 引擎 (RapidOCR PP-OCRv4)...")
     ocr = RapidOCR()
@@ -374,195 +388,206 @@ def convert_table_pdf_to_excel(pdf_path, output_path, dpi=300, log_callback=None
     log(f"\n📷 步骤 1/3：PDF 转图片 (DPI={dpi})...")
     if progress_callback: progress_callback(0.1)
     page_data = []
-    with pdfplumber.open(pdf_path) as pdf:
-        total_pages = len(pdf.pages)
-        for i, page in enumerate(pdf.pages):
-            tmp = f"_tmp_page_{i}.png"
-            page.to_image(resolution=dpi).save(tmp)
-            log(f"  ✓ 第 {i + 1}/{total_pages} 页")
-            page_data.append(tmp)
-            if progress_callback: progress_callback(0.1 + 0.3 * ((i + 1) / total_pages))
+    tmp_dir = tempfile.mkdtemp(prefix="pdf_conv_")
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            total_pages = len(pdf.pages)
+            for i, page in enumerate(pdf.pages):
+                if cancel_check:
+                    cancel_check()
+                tmp = os.path.join(tmp_dir, f"page_{i}.png")
+                page.to_image(resolution=dpi).save(tmp)
+                log(f"  ✓ 第 {i + 1}/{total_pages} 页")
+                page_data.append(tmp)
+                if progress_callback:
+                    progress_callback(0.1 + 0.3 * ((i + 1) / total_pages))
 
-    # 动态检测列边界
-    log(f"\n🔍 分析表头以动态计算列边界...")
-    if page_data:
-        first_page_img = page_data[0]
-        result = full_page_ocr(ocr, first_page_img)
-        if result:
-            headers = {}
-            for item in result:
-                x_center = item['x']
-                y_center = item['y']
-                text = item['text']
-                # 只在页面上半部分找表头
-                if y_center > 800 * scale: continue
-                for k in ['物品名称', '规格', '数量', '单位', '单价', '金额', '备注']:
-                    if k in text and k not in headers:
-                        headers[k] = x_center
-            
-            log(f"  检测到表头: {list(headers.keys())}")
-            # 只需要 '单价' 和 '金额' 就能推算出所有边界
-            if '单价' in headers and '金额' in headers:
-                x_price = headers['单价']
-                x_amount = headers['金额']
-                x_unit = headers.get('单位', x_price - 150 * scale)
-                x_qty = headers.get('数量', x_unit - 150 * scale)
-                x_remark = headers.get('备注', x_amount + 150 * scale)
-                x_name = headers.get('物品名称', 400 * scale)
-                # 规格列：物品名称表头的右侧就是规格列的开始
-                # 物品名称表头中心在 x_name，但实际名称数据在更左边
-                # 所以名称/规格的分界点应该在表头中心偏左的位置
-                b0 = 0
-                b1 = x_name - 150 * scale               # 物品名称 | 规格型号 的分界
-                b2 = x_qty - 80 * scale                  # 规格型号 | 数量 的分界
-                b3 = (x_qty + x_unit) / 2                # 数量 | 单位
-                b4 = (x_unit + x_price) / 2              # 单位 | 单价
-                b5 = (x_price + x_amount) / 2            # 单价 | 金额
-                b6 = (x_amount + x_remark) / 2           # 金额 | 备注
-                b7 = 10000 * scale
-                # 将像素坐标转回 200 DPI 基准
-                col_bounds_200 = sorted([v / scale for v in [b0, b1, b2, b3, b4, b5, b6, b7]])
-                log(f"  ✅ 成功应用动态边界！")
+        if cancel_check:
+            cancel_check()
+
+        # 动态检测列边界
+        log(f"\n🔍 分析表头以动态计算列边界...")
+        if page_data:
+            first_page_img = page_data[0]
+            result = full_page_ocr(ocr, first_page_img)
+            if result:
+                headers = {}
+                for item in result:
+                    if cancel_check:
+                        cancel_check()
+                    x_center = item['x']
+                    y_center = item['y']
+                    text = item['text']
+                    if y_center > 800 * scale:
+                        continue
+                    for k in ['物品名称', '规格', '数量', '单位', '单价', '金额', '备注']:
+                        if k in text and k not in headers:
+                            headers[k] = x_center
+
+                log(f"  检测到表头: {list(headers.keys())}")
+                if '单价' in headers and '金额' in headers:
+                    x_price = headers['单价']
+                    x_amount = headers['金额']
+                    x_unit = headers.get('单位', x_price - 150 * scale)
+                    x_qty = headers.get('数量', x_unit - 150 * scale)
+                    x_remark = headers.get('备注', x_amount + 150 * scale)
+                    x_name = headers.get('物品名称', 400 * scale)
+                    b0 = 0
+                    b1 = x_name - 150 * scale
+                    b2 = x_qty - 80 * scale
+                    b3 = (x_qty + x_unit) / 2
+                    b4 = (x_unit + x_price) / 2
+                    b5 = (x_price + x_amount) / 2
+                    b6 = (x_amount + x_remark) / 2
+                    b7 = 10000 * scale
+                    col_bounds_200 = sorted([v / scale for v in [b0, b1, b2, b3, b4, b5, b6, b7]])
+                    log(f"  ✅ 成功应用动态边界！")
+                else:
+                    log(f"  未找齐关键表头，使用默认边界。")
+
+        log(f"\n🔍 步骤 2/3：OCR + 表格提取...")
+        all_rows = []
+        contract_info = {}
+        header = ['物品名称', '', '数量', '单位', '含税单价', '金额', '备注']
+        col_bounds = [int(x * scale) for x in col_bounds_200]
+
+        for pi, img_path in enumerate(page_data):
+            if cancel_check:
+                cancel_check()
+            log(f"\n  --- 第 {pi + 1} 页 ---")
+
+            h_lines = detect_h_lines(img_path, min_len=int(60 * scale))
+            log(f"  水平线：{len(h_lines)} 条")
+
+            enhanced_path = preprocess_image(img_path)
+            try:
+                if cancel_check:
+                    cancel_check()
+                items = full_page_ocr(ocr, enhanced_path)
+            finally:
+                if enhanced_path != img_path and os.path.exists(enhanced_path):
+                    os.remove(enhanced_path)
+            log(f"  OCR 文本块：{len(items)} 个")
+
+            if pi == 0 and h_lines:
+                table_start_y = 0
+                for y in h_lines:
+                    if y > int(280 * scale):
+                        table_start_y = y
+                        break
+                for item in items:
+                    if cancel_check:
+                        cancel_check()
+                    t = item['text']
+                    if item['y'] < table_start_y:
+                        if re.search(r'A\d{8,}', t):
+                            m = re.search(r'A\d+', t)
+                            contract_info['contract_no'] = m.group()
+                        if '日期' in t and '/' in t:
+                            contract_info['date'] = t.replace('日期：', '').replace('日期:', '').strip()
+                        if '供方' in t:
+                            contract_info['supplier'] = t.replace('供方：', '').replace('供方:', '').strip()
+                        if '需方' in t:
+                            contract_info['buyer'] = t.replace('需方：', '').replace('需方:', '').strip()
+                        if '有限公司' in t and '供方' not in t and '需方' not in t:
+                            if len(t) > len(contract_info.get('company', '')):
+                                contract_info['company'] = t
+
+            row_groups = assign_to_rows(items, h_lines)
+
+            if pi == 0:
+                header_row_idx = None
+                for ridx, ritems in row_groups.items():
+                    texts = ' '.join(it['text'] for it in ritems)
+                    if '物品名称' in texts or '含税单价' in texts:
+                        header_row_idx = ridx
+                        break
+                data_start = (header_row_idx + 1) if header_row_idx is not None else 2
             else:
-                log(f"  未找齐关键表头，使用默认边界。")
+                data_start = 0
 
-    log(f"\n🔍 步骤 2/3：OCR + 表格提取...")
-    all_rows = []
-    contract_info = {}
-    header = ['物品名称', '', '数量', '单位', '含税单价', '金额', '备注']
-    col_bounds = [int(x * scale) for x in col_bounds_200]
+            page_rows = []
+            for ridx in sorted(row_groups.keys()):
+                if cancel_check:
+                    cancel_check()
+                if ridx < data_start:
+                    continue
+                row_items = row_groups[ridx]
 
-    for pi, img_path in enumerate(page_data):
-        log(f"\n  --- 第 {pi + 1} 页 ---")
-
-        # 检测水平线
-        h_lines = detect_h_lines(img_path, min_len=int(60 * scale))
-        log(f"  水平线：{len(h_lines)} 条")
-
-        # 图像预处理（增强对比度 + 去噪）
-        enhanced_path = preprocess_image(img_path)
-
-        # 整页 OCR
-        items = full_page_ocr(ocr, enhanced_path)
-        log(f"  OCR 文本块：{len(items)} 个")
-
-        # 清理预处理临时文件
-        if enhanced_path != img_path and os.path.exists(enhanced_path):
-            os.remove(enhanced_path)
-
-        # 提取合同信息（第一页）
-        if pi == 0 and h_lines:
-            table_start_y = 0
-            for y in h_lines:
-                if y > int(280 * scale):
-                    table_start_y = y
+                texts = ' '.join(it['text'] for it in row_items)
+                if '第' in texts and '页' in texts:
+                    continue
+                if any(k in texts for k in ['合计', '营计', '总计', '合汁']) and len(texts.replace(' ', '')) <= 15:
+                    row_dict = assign_to_columns(row_items, col_bounds)
+                    page_rows.append(row_dict)
                     break
-            for item in items:
-                t = item['text']
-                if item['y'] < table_start_y:
-                    if re.search(r'A\d{8,}', t):
-                        m = re.search(r'A\d+', t)
-                        contract_info['contract_no'] = m.group()
-                    if '日期' in t and '/' in t:
-                        contract_info['date'] = t.replace('日期：', '').replace('日期:', '').strip()
-                    if '供方' in t:
-                        contract_info['supplier'] = t.replace('供方：', '').replace('供方:', '').strip()
-                    if '需方' in t:
-                        contract_info['buyer'] = t.replace('需方：', '').replace('需方:', '').strip()
-                    if '有限公司' in t and '供方' not in t and '需方' not in t:
-                        if len(t) > len(contract_info.get('company', '')):
-                            contract_info['company'] = t
 
-        # 分配到行
-        row_groups = assign_to_rows(items, h_lines)
+                skip_keywords = [
+                    '总计金额', '交货地点', '运输方式', '验收标准',
+                    '保修期', '结算方式', '违约责任', '解决合同',
+                    '本合同', '以上产品', '单位名称', '单位地址',
+                    '代理人', '电话', '传真', '开户行', '账号',
+                    '需方需求', '供方负担', '签字盖章'
+                ]
+                if any(kw in texts for kw in skip_keywords):
+                    continue
 
-        # 确定表格数据行范围
-        if pi == 0:
-            # 第一页：跳过表头区域 (前几行是标题/信息)
-            # 找到包含 "物品名称" 的行，下一行开始是数据
-            header_row_idx = None
-            for ridx, ritems in row_groups.items():
-                texts = ' '.join(it['text'] for it in ritems)
-                if '物品名称' in texts or '含税单价' in texts:
-                    header_row_idx = ridx
-                    break
-            data_start = (header_row_idx + 1) if header_row_idx is not None else 2
-        else:
-            data_start = 0
-
-        # 转换为表格行
-        page_rows = []
-        for ridx in sorted(row_groups.keys()):
-            if ridx < data_start:
-                continue
-            row_items = row_groups[ridx]
-
-            # 跳过页脚和合同条款
-            texts = ' '.join(it['text'] for it in row_items)
-            if '第' in texts and '页' in texts:
-                continue
-            if any(k in texts for k in ['合计', '营计', '总计', '合汁']) and len(texts.replace(' ', '')) <= 15:
-                # 保留 OCR 原本的合计行，然后停止提取（过滤掉后面的无关页脚）
                 row_dict = assign_to_columns(row_items, col_bounds)
-                page_rows.append(row_dict)
-                break  # 合计行及其后面不再有表格数据
-            # 跳过合同条款
-            skip_keywords = ['总计金额', '交货地点', '运输方式', '验收标准',
-                             '保修期', '结算方式', '违约责任', '解决合同',
-                             '本合同', '以上产品', '单位名称', '单位地址',
-                             '代理人', '电话', '传真', '开户行', '账号',
-                             '需方需求', '供方负担', '签字盖章']
-            if any(kw in texts for kw in skip_keywords):
-                continue
+                non_empty = sum(1 for v in row_dict.values() if v.strip())
+                has_name = bool(row_dict.get(0, '').strip() or row_dict.get(1, '').strip())
+                has_money = bool(row_dict.get(4, '').strip() or row_dict.get(5, '').strip())
+                if non_empty >= 2 and (has_name or has_money):
+                    page_rows.append(row_dict)
 
-            # 分配到列
-            row_dict = assign_to_columns(row_items, col_bounds)
+            all_rows.extend(page_rows)
+            log(f"  ✓ 提取 {len(page_rows)} 行数据")
+            if progress_callback:
+                progress_callback(0.4 + 0.4 * ((pi + 1) / total_pages))
 
-            # 只保留有意义的行（至少有2个非空单元格，且包含名称或金额数据）
-            non_empty = sum(1 for v in row_dict.values() if v.strip())
-            has_name = bool(row_dict.get(0, '').strip() or row_dict.get(1, '').strip())
-            has_money = bool(row_dict.get(4, '').strip() or row_dict.get(5, '').strip())
-            if non_empty >= 2 and (has_name or has_money):
-                page_rows.append(row_dict)
+        if cancel_check:
+            cancel_check()
+        log(f"\n  📋 共 {len(all_rows)} 行")
 
-        all_rows.extend(page_rows)
-        log(f"  ✓ 提取 {len(page_rows)} 行数据")
-        if progress_callback: progress_callback(0.4 + 0.4 * ((pi + 1) / total_pages))
+        log(f"\n🔧 数值校验与修正...")
+        suspicious_rows, fixed_count = post_process_rows(all_rows, log_func=log)
+        log(f"  ✅ 补充了 {fixed_count} 处缺失数据")
+        if suspicious_rows:
+            log(f"  ⚠️ 发现 {len(suspicious_rows)} 行可疑数据（将在 Excel 中用黄色标记）")
 
-    log(f"\n  📋 共 {len(all_rows)} 行")
+        log(f"\n  前5行预览：")
+        for i, row in enumerate(all_rows[:5]):
+            if cancel_check:
+                cancel_check()
+            name = row.get(0, '')[:12] or row.get(1, '')[:12]
+            qty = row.get(2, '')
+            price = row.get(4, '')
+            amount = row.get(5, '')
+            log(f"  {i+1}. {name}")
+            if qty: log(f"     数量:{qty}")
+            if price: log(f"     单价:{price}")
+            if amount: log(f"     金额:{amount}")
 
-    # 后处理：OCR 数值清洗 + 交叉校验 (数量×单价=金额)
-    log(f"\n🔧 数值校验与修正...")
-    suspicious_rows, fixed_count = post_process_rows(all_rows, log_func=log)
-    log(f"  ✅ 补充了 {fixed_count} 处缺失数据")
-    if suspicious_rows:
-        log(f"  ⚠️ 发现 {len(suspicious_rows)} 行可疑数据（将在 Excel 中用黄色标记）")
+        log(f"\n📝 步骤 3/3：生成 Excel...")
+        if progress_callback:
+            progress_callback(0.9)
+        if cancel_check:
+            cancel_check()
+        create_excel(all_rows, header, output_path, contract_info, suspicious_rows=suspicious_rows)
 
-    # 预览
-    log(f"\n  前5行预览：")
-    for i, row in enumerate(all_rows[:5]):
-        cells = []
-        for c in range(7):
-            val = row.get(c, '')[:18]
-            cells.append(f'{val:18s}')
-        log(f"  {i + 1}: {'|'.join(cells)}")
-
-    # 生成 Excel
-    log(f"\n📝 步骤 3/3：生成 Excel...")
-    if progress_callback: progress_callback(0.9)
-    create_excel(all_rows, header, output_path, contract_info, suspicious_rows=suspicious_rows)
-
-    # 清理
-    for f in page_data:
+        if progress_callback:
+            progress_callback(1.0)
+        log(f"\n{'=' * 30}")
+        log(f"  ✅ 完成！")
+        log(f"  {os.path.basename(output_path)}")
+        log(f"{'=' * 30}\n")
+    except ConversionCancelled:
+        log("\n⏹ 已停止当前任务。")
+        raise
+    finally:
         try:
-            os.remove(f)
-        except OSError:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
             pass
-
-    if progress_callback: progress_callback(1.0)
-    log(f"\n{'=' * 55}")
-    log(f"  ✅ 完成！输出：{os.path.abspath(output_path)}")
-    log(f"{'=' * 55}\n")
 
 
 # 兼容旧调用名。
